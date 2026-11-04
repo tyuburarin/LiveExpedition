@@ -58,6 +58,12 @@ fun AppScreen(model: AppModel, onSecure: (Boolean) -> Unit) {
                     route = ""
                 }
             "deadlines" -> route = "deadlines"
+            "accounts",
+            "credit",
+            "transactions" -> {
+                tab = 3
+                route = if (key == "credit") "cards" else key
+            }
             else ->
                 if (item != null) detail = item
                 else model.beginEdit(Item(kind = "schedule", data = emptyMap()))
@@ -71,6 +77,7 @@ fun AppScreen(model: AppModel, onSecure: (Boolean) -> Unit) {
                 snack.showSnackbar(
                     message,
                     actionLabel = if (model.canUndo(message)) "元に戻す" else null,
+                    duration = SnackbarDuration.Short,
                 )
             if (result == SnackbarResult.ActionPerformed) model.undo()
             if (model.message.value == message) model.message.value = ""
@@ -89,6 +96,9 @@ fun AppScreen(model: AppModel, onSecure: (Boolean) -> Unit) {
                                 "settings" -> "設定"
                                 "subscription" -> "サブスク管理"
                                 "deadlines" -> "申込・支払期限"
+                                "accounts" -> "口座管理"
+                                "cards" -> "クレジットカード"
+                                "transactions" -> "収支"
                                 else -> listOf("ホーム", "ライブ", "遠征", "残高")[tab]
                             },
                             fontWeight = FontWeight.Bold,
@@ -129,19 +139,21 @@ fun AppScreen(model: AppModel, onSecure: (Boolean) -> Unit) {
                     .padding(padding)
                     .tabSwipe(swipe && route.isEmpty() && editing == null, tab, { tab = it })
             ) {
-                if (draft != null && editing == null && route.isEmpty()) {
-                    Panel(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-                        Row {
-                            Text("入力途中の記録があります", Modifier.weight(1f))
-                            TextButton(onClick = model::resumeDraft) { Text("再開") }
-                            TextButton(onClick = { discard = true }) { Text("破棄") }
-                        }
-                    }
-                }
                 Box(Modifier.weight(1f)) {
                     holder.SaveableStateProvider(tab) {
                         when {
-                            route == "settings" -> SettingsScreen(model)
+                            route == "settings" -> SettingsScreen(model, { detail = it })
+                            route == "accounts" -> AccountManager(all, model::beginEdit)
+                            route == "cards" ->
+                                CreditCardManager(all, model::beginEdit, { detail = it })
+                            route == "transactions" ->
+                                FinanceDashboard(
+                                    all,
+                                    money,
+                                    model::beginEdit,
+                                    { detail = it },
+                                    { route = "subscription" },
+                                )
                             route == "subscription" ->
                                 SubscriptionScreen(all, money, model::beginEdit, { detail = it })
                             route == "deadlines" -> DeadlineScreen(all, { detail = it })
@@ -167,12 +179,12 @@ fun AppScreen(model: AppModel, onSecure: (Boolean) -> Unit) {
                                     route == "plans",
                                 )
                             else ->
-                                FinanceDashboard(
+                                BalanceDashboard(
+                                    model,
                                     all,
                                     money,
                                     model::beginEdit,
-                                    { detail = it },
-                                    { route = "subscription" },
+                                    { route = it },
                                 )
                         }
                     }
@@ -180,21 +192,46 @@ fun AppScreen(model: AppModel, onSecure: (Boolean) -> Unit) {
             }
         }
         editing?.let { item ->
-            EditDialog(
-                item,
-                { model.editing.value = null },
-                all,
-                onDraft = model::saveDraft,
-                onOcr = external.ocr,
-                ocrReport = ocr,
-                ocrBusy = ocrBusy,
-                onConsumeOcr = { model.ocr.value = null },
-                onSaveExtra = model::saveChecked,
-                onDeleteExtra = model::delete,
-            ) { updated ->
-                model.saveChecked(updated)
-                model.finishDraft()
-            }
+            if (
+                item.kind in
+                    listOf(
+                        "transaction",
+                        "account",
+                        "credit_card",
+                        "balance_setting",
+                        "card_debit",
+                        "subscription",
+                    )
+            ) {
+                FinanceEditor(
+                    item,
+                    all,
+                    model::saveDraft,
+                    model::closeEditor,
+                    model::discardDraft,
+                    model::beginEdit,
+                ) { updated ->
+                    model.saveChecked(updated)
+                    model.finishDraft()
+                }
+            } else
+                EditDialog(
+                    item,
+                    model::closeEditor,
+                    all,
+                    onDraft = model::saveDraft,
+                    onOcr = external.ocr,
+                    ocrReport = ocr,
+                    ocrBusy = ocrBusy,
+                    onConsumeOcr = { model.ocr.value = null },
+                    onSaveExtra = model::saveChecked,
+                    onDeleteExtra = model::delete,
+                    onEditRelated = model::beginEdit,
+                    onDiscard = model::discardDraft,
+                ) { updated ->
+                    model.saveChecked(updated)
+                    model.finishDraft()
+                }
         }
         detail?.let { original ->
             val item = all.firstOrNull { it.id == original.id } ?: original
@@ -211,22 +248,20 @@ fun AppScreen(model: AppModel, onSecure: (Boolean) -> Unit) {
                 { detail = it },
             )
         }
-        if (discard)
+        val cancellation = SubscriptionBilling.cancellationDue(all, java.time.LocalDate.now())
+        if (cancellation != null && editing == null)
             AlertDialog(
-                onDismissRequest = { discard = false },
-                title = { Text("下書きを破棄しますか？") },
-                text = { Text("登録済みのデータは変更せず、一時保存した入力だけを削除します。") },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            model.discardDraft()
-                            discard = false
-                        }
-                    ) {
-                        Text("破棄")
-                    }
+                onDismissRequest = { model.deferCancellation(cancellation) },
+                title = { Text("解約予定を過ぎています") },
+                text = {
+                    Text("「${cancellation.title}」を一覧から削除しますか？取引・カード債務・履歴は残ります。外部サービスの解約は別途必要です。")
                 },
-                dismissButton = { TextButton(onClick = { discard = false }) { Text("残す") } },
+                confirmButton = {
+                    TextButton(onClick = { model.delete(cancellation) }) { Text("削除") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { model.deferCancellation(cancellation) }) { Text("あとで") }
+                },
             )
     }
 }

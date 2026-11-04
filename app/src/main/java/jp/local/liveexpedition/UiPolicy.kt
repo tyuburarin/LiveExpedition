@@ -19,6 +19,19 @@ object DesignTokens {
     val Muted = Color(0xFFADB2BC)
     val chart = listOf(Blue, Color(0xFFC4B1A6), Success, Color(0xFFBEC3CE), Warning)
 
+    fun tileAccent(key: String) =
+        when (key) {
+            "money",
+            "accounts" -> Success
+            "live",
+            "venue" -> Color(0xFFC3A5F7)
+            "plan",
+            "movement",
+            "hotel" -> Color(0xFF83CEDC)
+            "subscription" -> Color(0xFFDCA3C6)
+            else -> Blue
+        }
+
     fun accent(name: String) =
         when (name) {
             "mint" -> Success
@@ -39,8 +52,11 @@ object UiPolicy {
     fun meaning(text: String) =
         when {
             text.contains("超過") || text.contains("落選") || text.contains("マイナス") -> Meaning.NEGATIVE
-            text in listOf("予約済", "支払済み", "支払済", "当選", "確定", "採用中") -> Meaning.POSITIVE
-            text.contains("要確認") || text.contains("未予約") -> Meaning.WARNING
+            text in listOf("予約済", "支払済み", "支払済", "引落し済み", "当選", "確定", "採用中") -> Meaning.POSITIVE
+            text.contains("要確認") ||
+                text.contains("未予約") ||
+                text.contains("未引落し") ||
+                text.contains("未確定") -> Meaning.WARNING
             text in listOf("未予約", "検討中", "未確定", "要確認", "未払い", "期限間近") -> Meaning.WARNING
             text in listOf("申込済み", "申込中", "受付中", "選択中") -> Meaning.PRIMARY
             else -> Meaning.NEUTRAL

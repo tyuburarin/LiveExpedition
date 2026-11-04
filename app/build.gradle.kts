@@ -13,8 +13,8 @@ android {
         applicationId = "jp.local.liveexpedition.preview"
         minSdk = 33
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.3.1-preview"
+        versionCode = 7
+        versionName = "0.3.4-preview"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {

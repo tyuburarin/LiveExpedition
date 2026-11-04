@@ -17,6 +17,42 @@ object Catalog {
         listOf("remindApply", "remindResult", "remindPay", "remindSubscription", "remindTravel")
     val kinds =
         listOf(
+            Kind("account", "口座", listOf(f("title", "口座名", true))),
+            Kind(
+                "credit_card",
+                "クレジットカード",
+                listOf(
+                    f("title", "カード名", true),
+                    f("closingDay", "締め日", true),
+                    f("debitDay", "引落し日", true),
+                    f("debitOffset", "締め月からの月数", true),
+                    f("debitRule", "休日の扱い", true),
+                    f("accountId", "引落し口座", true),
+                ),
+            ),
+            Kind(
+                "balance_setting",
+                "残高を設定",
+                listOf(
+                    f("title", "内容", true),
+                    f("date", "設定日", true),
+                    f("accountId", "口座", true),
+                    f("amount", "実際の残高 円", true),
+                    f("memo", "メモ"),
+                ),
+            ),
+            Kind(
+                "card_debit",
+                "カード引落し",
+                listOf(
+                    f("title", "内容", true),
+                    f("date", "実際の引落し日", true),
+                    f("cardId", "カード", true),
+                    f("accountId", "引落し口座", true),
+                    f("usageIds", "対象のカード利用", true),
+                    f("amount", "引落し額", true),
+                ),
+            ),
             Kind(
                 "artist",
                 "アーティスト",
@@ -79,6 +115,9 @@ object Catalog {
                     f("fee", "手数料 円"),
                     f("due", "支払期限 YYYY-MM-DDTHH:mm"),
                     f("method", "支払方法"),
+                    f("accountId", "口座"),
+                    f("cardId", "クレジットカード"),
+                    f("dueDate", "支払予定日"),
                     f("memo", "メモ"),
                 ),
             ),
@@ -99,6 +138,9 @@ object Catalog {
                     f("priceState", "料金: 確定/概算/未確定"),
                     f("due", "支払・予約期限"),
                     f("method", "支払方法"),
+                    f("accountId", "口座"),
+                    f("cardId", "クレジットカード"),
+                    f("dueDate", "支払予定日"),
                     f("url", "URL https://"),
                     f("memo", "メモ"),
                 ),
@@ -114,6 +156,9 @@ object Catalog {
                     f("amount", "金額 円", true),
                     f("category", "カテゴリ"),
                     f("method", "支払方法"),
+                    f("accountId", "口座"),
+                    f("cardId", "クレジットカード"),
+                    f("dueDate", "支払予定日"),
                     f("memo", "メモ"),
                 ),
             ),
@@ -136,7 +181,15 @@ object Catalog {
                     f("cycle", "月額/年額", true),
                     f("amount", "料金 円", true),
                     f("date", "次回請求日 YYYY-MM-DD", true),
+                    f("billDay", "毎月の請求日"),
+                    f("billMonth", "請求月"),
+                    f("lastBill", "前回請求日"),
+                    f("manualNext", "請求日の個別変更"),
+                    f("cancelOn", "解約予定日"),
                     f("method", "支払方法"),
+                    f("accountId", "口座"),
+                    f("cardId", "クレジットカード"),
+                    f("dueDate", "支払予定日"),
                     f("renew", "自動更新: はい/いいえ"),
                     f("status", "契約中/解約済", true),
                     f("memo", "メモ"),
@@ -203,6 +256,12 @@ object Rules {
                                 "billingDates",
                                 "segments",
                                 "liveRefs",
+                                "seq",
+                                "recordedAt",
+                                "revision",
+                                "registeredOn",
+                                "archived",
+                                "cancelDeferred",
                             ) +
                             Catalog.reminderKeys
                 }
@@ -214,7 +273,10 @@ object Rules {
             require(
                 v.length <=
                     if (k == "memo") 8000
-                    else if (k in listOf("members", "payments", "billingDates", "segments")) 20000
+                    else if (
+                        k in listOf("members", "payments", "billingDates", "segments", "usageIds")
+                    )
+                        20000
                     else 2048
             ) {
                 "入力が長すぎます"
@@ -223,10 +285,23 @@ object Rules {
                 when (k) {
                     "amount",
                     "fee" ->
-                        require(v.toLongOrNull() in 0L..MAX_AMOUNT) { "金額を0〜999999999の整数で入力してください" }
+                        require(
+                            v.toLongOrNull() in
+                                (if (item.kind == "balance_setting") -MAX_AMOUNT
+                                else 0L)..MAX_AMOUNT
+                        ) {
+                            "金額の整数と範囲を確認してください"
+                        }
                     "quantity" -> require(v.toIntOrNull() in 1..20) { "枚数は1〜20です" }
                     "transfers" -> require(v.toIntOrNull() in 0..99)
-                    "date" -> require(LocalDate.parse(v).year in 2000..2100) { "日付は2000〜2100年です" }
+                    "date",
+                    "dueDate",
+                    "lastBill",
+                    "manualNext",
+                    "cancelOn",
+                    "cancelDeferred",
+                    "registeredOn" ->
+                        require(LocalDate.parse(v).year in 2000..2100) { "日付は2000〜2100年です" }
                     "month" -> java.time.YearMonth.parse(v).also { require(it.year in 2000..2100) }
                     "start",
                     "end",
@@ -240,6 +315,8 @@ object Rules {
                     "remindTravel" ->
                         require(LocalDateTime.parse(v).year in 2000..2100) { "日時は2000〜2100年です" }
                     "url" -> require(url(v)) { "安全なhttp(s) URLを入力してください" }
+                    "accountId",
+                    "cardId",
                     "parent",
                     "artistRef",
                     "tourRef",
@@ -249,6 +326,7 @@ object Rules {
                             runCatching { UUID.fromString(v).toString() == v }.getOrDefault(false)
                         )
                     "members",
+                    "usageIds",
                     "liveRefs",
                     "payments" ->
                         require(
@@ -259,6 +337,15 @@ object Rules {
                         )
                     "billingDates" ->
                         require(v.split(',').all { LocalDate.parse(it).year in 2000..2100 })
+                    "seq",
+                    "revision" -> require(v.toLongOrNull() in 0L..Long.MAX_VALUE)
+                    "recordedAt" -> LocalDateTime.parse(v)
+                    "closingDay",
+                    "debitDay",
+                    "billDay" -> require(v.toIntOrNull() in 1..31) { "日付の数字は1〜31です" }
+                    "billMonth" -> require(v.toIntOrNull() in 1..12)
+                    "debitOffset" -> require(v.toIntOrNull() in 0..2)
+                    "archived",
                     "adopted",
                     "notify" -> require(v in listOf("true", "false"))
                 }
@@ -274,6 +361,14 @@ object Rules {
                 require(item["cycle"] in listOf("月額", "年額"))
                 require(item["status"] in listOf("契約中", "解約済"))
                 require(item["renew"] in listOf("", "はい", "いいえ"))
+            }
+        }
+        if (item.kind == "credit_card") {
+            require(item["debitRule"] in listOf("日付どおり", "土日は翌平日"))
+            require(
+                item["debitOffset"] != "0" || item["debitDay"].toInt() >= item["closingDay"].toInt()
+            ) {
+                "当月引落しは締め日以降を指定してください"
             }
         }
         if (item["image"].isNotEmpty())
@@ -298,18 +393,7 @@ object Rules {
         }
     }
 
-    fun balance(items: List<Item>): Long =
-        items
-            .filter { it.kind in listOf("transaction", "adjustment") }
-            .sumOf {
-                when (it["type"]) {
-                    "増額" -> it.amount
-                    "減額" -> -it.amount
-                    "収入" -> it.amount
-                    "支出" -> -it.amount
-                    else -> 0L
-                }
-            }
+    fun balance(items: List<Item>): Long = Ledger.totals(items).current
 
     fun active(items: List<Item>, now: LocalDateTime) =
         items

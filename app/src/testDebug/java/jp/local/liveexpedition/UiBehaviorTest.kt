@@ -269,7 +269,7 @@ class UiBehaviorTest {
             up()
         }
         Assert.assertNotEquals(Tiles.defaults.map { it.key }, saved.map { it.key })
-        Assert.assertEquals("plan", saved[1].key)
+        Assert.assertEquals("subscription", saved[1].key)
         capture("home-after-drag")
     }
 

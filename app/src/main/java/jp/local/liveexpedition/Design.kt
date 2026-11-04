@@ -178,7 +178,10 @@ fun AccentChip(selected: Boolean, onClick: () -> Unit, label: @Composable () -> 
 
 fun tileIcon(key: String): ImageVector =
     when (key) {
-        "money" -> Icons.Outlined.AccountBalanceWallet
+        "money",
+        "accounts" -> Icons.Outlined.AccountBalanceWallet
+        "credit" -> Icons.Outlined.CreditCard
+        "transactions" -> Icons.Outlined.ReceiptLong
         "live" -> Icons.Outlined.ConfirmationNumber
         "plan" -> Icons.Outlined.Flight
         "subscription" -> Icons.Outlined.CloudQueue

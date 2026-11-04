@@ -33,12 +33,12 @@ fun MoneyAmount(
     var fitted by remember(key, value, size, masked) { mutableIntStateOf(size) }
     Column(modifier) {
         if (label.isNotEmpty()) Caption(label)
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 if (masked) "••••" else "¥%,d".format(value),
                 fontSize = fitted.sp,
                 softWrap = false,
-                onTextLayout = { if (it.hasVisualOverflow && fitted > 11) fitted-- },
+                onTextLayout = { if (it.didOverflowWidth && fitted > 11) fitted-- },
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 color =
@@ -48,7 +48,7 @@ fun MoneyAmount(
                             else if (value > 0) Meaning.POSITIVE else Meaning.NEUTRAL
                         )
                     else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f, false),
+                modifier = Modifier.weight(1f),
             )
             IconButton(onClick = { privacy.set(key, !masked) }, modifier = Modifier.size(30.dp)) {
                 Icon(

@@ -35,6 +35,9 @@ fun DashboardScreen(
     onTiles: (List<Tile>) -> Unit,
     onOpen: (String, Item?) -> Unit,
     onToggleAmounts: () -> Unit = {},
+    scope: String = "home",
+    selectedMonth: YearMonth = YearMonth.now(),
+    allowedKeys: Set<String> = Tiles.names.keys,
 ) {
     var draft by remember { mutableStateOf(tiles) }
     var original by remember { mutableStateOf(tiles) }
@@ -88,17 +91,19 @@ fun DashboardScreen(
         ) {
             val gap = 12.dp
             val cell = (maxWidth - gap) / 2
+            val rowHeight = (144 * density.fontScale.coerceIn(1f, 1.4f)).dp
             val step = with(density) { (cell + gap).toPx() }
+            val rowStep = with(density) { (rowHeight + gap).toPx() }
             val positions = Tiles.pack(draft)
             val rows = positions.values.maxOfOrNull { it.y + it.height } ?: 0
             Box(
                 Modifier.fillMaxWidth()
-                    .height(if (rows == 0) 120.dp else (cell + gap) * rows - gap + 16.dp)
+                    .height(if (rows == 0) 120.dp else (rowHeight + gap) * rows - gap + 16.dp)
             ) {
                 draft.forEach { tile ->
                     val c = positions.getValue(tile.key)
                     val active = dragId == tile.key
-                    val normal = Offset(c.x * step, c.y * step)
+                    val normal = Offset(c.x * step, c.y * rowStep)
                     val raw =
                         if (active)
                             origin + delta + Offset(0f, (scroll.value - startScroll).toFloat())
@@ -115,7 +120,7 @@ fun DashboardScreen(
                         Modifier.offset { offset }
                             .size(
                                 cell * tile.width + gap * (tile.width - 1),
-                                cell * tile.height + gap * (tile.height - 1),
+                                rowHeight * tile.height + gap * (tile.height - 1),
                             )
                             .zIndex(if (active) 10f else 0f)
                             .graphicsLayer {
@@ -140,7 +145,7 @@ fun DashboardScreen(
                                         }
                                     )
                             }
-                            .pointerInput(tile.key, tile.width, tile.height, step) {
+                            .pointerInput(tile.key, tile.width, tile.height, step, rowStep) {
                                 detectDashboardGestures(
                                     onTap = { latestOpen(tile.key, tileItem(tile.key, latestAll)) },
                                     onDragStart = { p ->
@@ -149,7 +154,7 @@ fun DashboardScreen(
                                         dragId = tile.key
                                         origin =
                                             Tiles.pack(draft).getValue(tile.key).let {
-                                                Offset(it.x * step, it.y * step)
+                                                Offset(it.x * step, it.y * rowStep)
                                             }
                                         delta = Offset.Zero
                                         pointer =
@@ -185,7 +190,7 @@ fun DashboardScreen(
                                                         (origin.y +
                                                             delta.y +
                                                             grab.y +
-                                                            scroll.value - startScroll) / step,
+                                                            scroll.value - startScroll) / rowStep,
                                                     )
                                                 latestSave(draft)
                                             } else draft = original
@@ -205,13 +210,21 @@ fun DashboardScreen(
                                                     tile.key,
                                                     (origin.x + delta.x + grab.x) / step,
                                                     (origin.y + delta.y + grab.y + scroll.value -
-                                                        startScroll) / step,
+                                                        startScroll) / rowStep,
                                                 )
                                     },
                                 )
                             }
                     ) {
-                        DashboardTile(tile, all, money, onToggleAmounts, dragId == null) {
+                        DashboardTile(
+                            tile,
+                            all,
+                            money,
+                            onToggleAmounts,
+                            dragId == null,
+                            scope,
+                            selectedMonth,
+                        ) {
                             onOpen(tile.key, tileItem(tile.key, all))
                         }
                     }
@@ -279,7 +292,7 @@ fun DashboardScreen(
                         }
                     ) {
                         Icon(Icons.Outlined.VisibilityOff, null)
-                        Text("ホームから非表示")
+                        Text("この画面から非表示")
                     }
                     Row {
                         TextButton(
@@ -316,27 +329,29 @@ fun DashboardScreen(
                     .padding(bottom = 30.dp)
             ) {
                 SectionTitle("表示するタイルを選択")
-                Tiles.names.forEach { (key, label) ->
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .clickable {
-                                val exists = draft.any { it.key == key }
-                                draft =
-                                    if (exists) draft.filter { it.key != key }
-                                    else draft + Tile(key)
-                                onTiles(draft)
-                            }
-                            .padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(tileIcon(key), null, Modifier.size(26.dp))
-                        Text(label, Modifier.weight(1f).padding(start = 14.dp))
-                        Checkbox(draft.any { it.key == key }, null)
+                Tiles.names
+                    .filterKeys { it in allowedKeys }
+                    .forEach { (key, label) ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    val exists = draft.any { it.key == key }
+                                    draft =
+                                        if (exists) draft.filter { it.key != key }
+                                        else draft + Tile(key)
+                                    onTiles(draft)
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(tileIcon(key), null, Modifier.size(26.dp))
+                            Text(label, Modifier.weight(1f).padding(start = 14.dp))
+                            Checkbox(draft.any { it.key == key }, null)
+                        }
                     }
-                }
                 TextButton(
                     onClick = {
-                        draft = Tiles.defaults
+                        draft = if (scope == "balance") BalanceLayouts.defaults else Tiles.defaults
                         onTiles(draft)
                         adding = false
                     }
@@ -373,87 +388,115 @@ private fun DashboardTile(
     money: (Long) -> String,
     onToggleAmounts: () -> Unit,
     enabled: Boolean,
+    scope: String,
+    selectedMonth: YearMonth,
     onOpen: () -> Unit,
 ) {
     val roomy = tile.width == 2 || tile.height == 2
     val big = tile.width == 2 && tile.height == 2
+    val accent = DesignTokens.tileAccent(tile.key)
     Card(
-        modifier = Modifier.fillMaxSize(),
+        modifier =
+            Modifier.fillMaxSize()
+                .border(1.dp, accent.copy(alpha = .35f), MaterialTheme.shapes.medium),
         colors =
             CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                containerColor =
+                    androidx.compose.ui.graphics.lerp(
+                        MaterialTheme.colorScheme.surfaceVariant,
+                        accent,
+                        .07f,
+                    ),
                 contentColor = MaterialTheme.colorScheme.onSurface,
                 disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                 disabledContentColor = MaterialTheme.colorScheme.onSurface,
             ),
     ) {
         Column(
-            Modifier.fillMaxSize().padding(if (tile.width == 1) 14.dp else 16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            Modifier.fillMaxSize().padding(if (tile.width == 1) 14.dp else 12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Icon(tileIcon(tile.key), null, Modifier.size(if (roomy) 26.dp else 28.dp))
-                if (tile.width == 2) {
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        Tiles.names.getValue(tile.key),
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                    )
-                }
-            }
-            if (tile.width == 1)
+                Icon(tileIcon(tile.key), null, Modifier.size(22.dp), tint = accent)
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    Tiles.names.getValue(tile.key),
+                    if (scope == "balance" && tile.key == "subscription" && !roomy) "サブスク管理"
+                    else Tiles.names.getValue(tile.key),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
             when (tile.key) {
                 "money" -> {
-                    val month = YearMonth.now().toString()
-                    val tx = all.filter { it.kind == "transaction" && it["date"].startsWith(month) }
-                    val income = tx.filter { it["type"] == "収入" }.sumOf { it.amount }
-                    val expense = tx.filter { it["type"] == "支出" }.sumOf { it.amount }
-                    val budget =
-                        all.filter {
-                                it.kind == "budget" &&
-                                    it["month"] == month &&
-                                    it["category"].isEmpty()
-                            }
-                            .sumOf { it.amount }
+                    val totals = Ledger.totals(all)
+                    val summary = Finance.month(all, selectedMonth)
                     val value =
                         when (tile.variant) {
-                            "total" -> income - expense
-                            "next" -> budget - expense
-                            else -> Rules.balance(all)
+                            "next" -> totals.projected
+                            "total" -> summary.net
+                            else -> totals.current
                         }
                     MoneyAmount(
-                        if (tile.variant == "default") "balance" else "${tile.variant}:$month",
+                        if (tile.variant == "next") "balance:projected"
+                        else if (tile.variant == "total") "net:$selectedMonth" else "balance",
                         value,
-                        size = if (big) 32 else if (tile.width == 2) 28 else 20,
+                        size = if (roomy) 30 else 21,
                         semanticSign = true,
                     )
                     if (tile.variant != "default")
-                        Caption(if (tile.variant == "total") "今月の収支差額" else "予算の残り")
-                    if (roomy) {
-                        Caption("収入 ${money(income)}　支出 ${money(expense)}")
-                        if (tile.height == 2) Caption("現在残高 ${money(Rules.balance(all))}")
-                        LinearProgressIndicator(
-                            progress = {
-                                if (budget > 0) (expense.toFloat() / budget).coerceIn(0f, 1f)
-                                else 0f
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            trackColor = MaterialTheme.colorScheme.outline,
-                        )
-                        Caption(
-                            if (budget > 0) "予算 ${money(budget)} / 残り ${money(budget-expense)}"
-                            else "予算は残高画面から設定"
+                        Caption(if (tile.variant == "next") "クレジット反映後" else "選択月の収支")
+                    if (roomy && tile.variant == "default") {
+                        Caption("クレジット反映後残高")
+                        MoneyAmount(
+                            "balance:projected",
+                            totals.projected,
+                            size = 20,
+                            semanticSign = true,
                         )
                     }
+                    if (big) {
+                        MoneyAmount("credit:unsettled", totals.outstanding, "未引落し（全期間）", 18)
+                        Caption("実残高から未引落しカード利用だけを差し引いた参考残高です。")
+                    }
+                }
+                "accounts" -> {
+                    Ledger.totals(all).accounts.forEach { account ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                account.account.title,
+                                Modifier.weight(1f),
+                                fontSize = 13.sp,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            MoneyAmount(
+                                "account:${account.account.id}",
+                                account.current,
+                                size = 18,
+                                semanticSign = true,
+                                modifier = Modifier.weight(1.5f),
+                            )
+                        }
+                    }
+                    if (big) MoneyAmount("balance", Ledger.totals(all).current, "全口座合計", 22, true)
+                }
+                "credit" -> {
+                    MoneyAmount(
+                        "credit:unsettled",
+                        Ledger.totals(all).outstanding,
+                        size = if (roomy) 26 else 20,
+                    )
+                    if (roomy) Caption("全期間の未引落し利用。予定日だけでは解消しません。")
+                }
+                "transactions" -> {
+                    val summary = Finance.month(all, selectedMonth)
+                    MoneyAmount("expense:$selectedMonth", summary.expense, "選択月の支出", 20)
+                    if (roomy) MoneyAmount("income:$selectedMonth", summary.income, "選択月の収入", 20)
                 }
                 "deadlines" -> {
                     val list = Connections.deadlines(all).filterNot { it.complete }
@@ -465,27 +508,20 @@ private fun DashboardTile(
                     }
                 }
                 "subscription" -> {
-                    val subs = all.filter { it.kind == "subscription" && it["status"] == "契約中" }
-                    val monthly =
-                        subs.sumOf { if (it["cycle"] == "年額") it.amount / 12 else it.amount }
-                    val next = subs.minByOrNull { it["date"] }
-                    TileValue(
-                        when (tile.variant) {
-                            "total" -> money(Finance.annualSubscriptions(all))
-                            "next" -> next?.title ?: "更新予定なし"
-                            else -> money(monthly)
-                        },
-                        if (roomy) 24 else 20,
-                    )
-                    Caption(
-                        if (tile.variant == "total") "年間換算"
-                        else if (tile.variant == "next") "次の更新" else "月額換算"
-                    )
-                    if (next != null) Caption("次回 ${UiPolicy.shortDate(next["date"])}")
-                    if (big)
-                        Caption(
-                            "年間換算 ${money(subs.sumOf{if(it["cycle"]=="年額")it.amount else it.amount*12})}"
+                    if (scope == "balance" && !roomy) Unit
+                    else {
+                        MoneyAmount(
+                            "subscription:forecast:$selectedMonth",
+                            SubscriptionBilling.forecast(all, selectedMonth),
+                            size = if (roomy) 26 else 20,
                         )
+                        Caption("${selectedMonth.monthValue}月の請求予測")
+                        if (roomy)
+                            all.filter(SubscriptionBilling::active)
+                                .mapNotNull { SubscriptionBilling.next(it) }
+                                .minOrNull()
+                                ?.let { Caption("次回 ${UiPolicy.shortDate(it.toString())}") }
+                    }
                 }
                 "plan" -> {
                     val plans =
@@ -501,8 +537,18 @@ private fun DashboardTile(
                         else "${plans.size} プラン",
                         if (roomy) 26 else 21,
                     )
-                    Caption(if (plans.any { it["adopted"] == "true" }) "採用中のプランあり" else "候補を比較して計画")
-                    if (roomy) plans.take(if (big) 4 else 2).forEach { Caption(it.title) }
+                    if (plans.isEmpty() || big || !roomy)
+                        Caption(
+                            if (plans.any { it["adopted"] == "true" }) "採用中のプランあり" else "候補を比較して計画"
+                        )
+                    if (roomy)
+                        plans.take(if (big) 4 else 1).forEach {
+                            Text(
+                                it.title,
+                                maxLines = if (big) 3 else 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                 }
                 else -> {
                     val item = tileItem(tile.key, all)
@@ -524,7 +570,7 @@ else->true}}} 件",
                             else item.title,
                             fontSize = if (big) 24.sp else 16.sp,
                             fontWeight = FontWeight.Medium,
-                            maxLines = if (roomy) 3 else 1,
+                            maxLines = if (big) 3 else 2,
                             overflow = TextOverflow.Ellipsis,
                         )
                         if (tile.variant == "next") Caption(item.title)

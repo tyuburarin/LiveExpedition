@@ -7,7 +7,9 @@ import androidx.datastore.preferences.core.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import java.time.LocalDate
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import org.json.JSONObject
 
@@ -22,6 +24,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     val message = MutableStateFlow("")
     val editing = MutableStateFlow<Item?>(null)
     val draft = MutableStateFlow<Item?>(null)
+    val savedInputs = MutableStateFlow<List<DraftEntry>>(emptyList())
     val ocr = MutableStateFlow<OcrReport?>(null)
     val ocrBusy = MutableStateFlow(false)
     val theme =
@@ -50,7 +53,21 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         bool("mask:$key", value)
     }
 
-    private var draftJob: Job? = null
+    private var draftRoute = ""
+    private val draftClock = AtomicLong(System.currentTimeMillis() * 1000)
+    private val draftWrites = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            for (write in draftWrites) try {
+                write()
+                savedInputs.value = DraftVault.list(ctx)
+            } catch (e: Exception) {
+                message.value = "下書きを保存できませんでした。空き容量を確認してください"
+            }
+        }
+    }
+
     private var undoAction: (suspend () -> Unit)? = null
     private var undoLabel = ""
 
@@ -76,40 +93,70 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun saveDraft(item: Item) {
-        if (draft.value == item) return
+        if (editing.value?.let(DraftBook::key) != DraftBook.key(item) || draft.value == item) return
         editing.value = item
         draft.value = item
-        draftJob?.cancel()
-        draftJob =
-            viewModelScope.launch {
-                delay(300)
-                try {
-                    withContext(Dispatchers.IO) { Drafts.save(ctx, item) }
-                } catch (e: Exception) {
-                    message.value = "一時保存できませんでした。空き容量を確認してください"
-                }
-            }
+        val route = draftRoute
+        val generation = draftClock.incrementAndGet()
+        draftWrites.trySend { DraftVault.save(ctx, item, route, generation) }
+    }
+
+    fun persistActiveDraft() {
+        val item = editing.value ?: return
+        try {
+            DraftVault.save(ctx, item, draftRoute, draftClock.incrementAndGet())
+        } catch (e: Exception) {
+            message.value = "入力の保存に失敗しました。空き容量を確認してください"
+        }
     }
 
     suspend fun finishDraft() {
-        draftJob?.cancel()
-        withContext(Dispatchers.IO) { Drafts.clear(ctx) }
-        draft.value = null
+        val item = editing.value ?: return
         editing.value = null
+        draft.value = null
         ocr.value = null
+        val complete = CompletableDeferred<Unit>()
+        draftWrites.send {
+            try {
+                DraftVault.finish(ctx, item)
+                complete.complete(Unit)
+            } catch (e: Exception) {
+                complete.completeExceptionally(e)
+            }
+        }
+        complete.await()
+    }
+
+    fun closeEditor() {
+        persistActiveDraft()
+        editing.value = null
+        draft.value = null
+        draftWrites.trySend { DraftVault.deactivate(ctx) }
     }
 
     fun discardDraft() {
         viewModelScope.launch { finishDraft() }
     }
 
-    fun beginEdit(item: Item) {
-        editing.value = if (draft.value?.id == item.id) draft.value else item
+    fun discardSavedInput(item: Item) {
+        draftWrites.trySend { DraftVault.finish(ctx, item) }
     }
 
-    fun resumeDraft() {
-        editing.value = draft.value
+    fun beginEdit(item: Item) {
+        persistActiveDraft()
+        draftWrites.trySend {
+            val existing = repo?.contains(item.id) ?: _items.value.any { it.id == item.id }
+            val restored = DraftVault.resolve(ctx, item, existing)
+            withContext(Dispatchers.Main) {
+                draftClock.accumulateAndGet(restored.generation, ::maxOf)
+                draftRoute = restored.route
+                editing.value = restored.item
+                draft.value = restored.item
+            }
+        }
     }
+
+    fun resumeDraft() {}
 
     fun duplicate(item: Item) {
         val copied =
@@ -141,6 +188,28 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             )
         }
 
+    val balanceTiles =
+        ctx.settings.data.map { prefs ->
+            prefs[stringPreferencesKey("balance_tiles_v034")]?.let { Tiles.decode(it, null, null) }
+                ?: BalanceLayouts.defaults
+        }
+
+    fun balanceTiles(value: List<Tile>) {
+        val encoded = Tiles.encode(value)
+        viewModelScope.launch {
+            val old = balanceTiles.first()
+            ctx.settings.edit { it[stringPreferencesKey("balance_tiles_v034")] = encoded }
+            offerUndo("残高の配置を保存しました") {
+                ctx.settings.edit {
+                    it[stringPreferencesKey("balance_tiles_v034")] = Tiles.encode(old)
+                }
+            }
+        }
+    }
+
+    fun deferCancellation(item: Item) =
+        save(item.copy(data = item.data + ("cancelDeferred" to LocalDate.now().toString())))
+
     fun tiles(value: List<Tile>) {
         val encoded = Tiles.encode(value)
         viewModelScope.launch {
@@ -167,8 +236,25 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 val db = VaultDatabase.create(ctx)
                 database = db
                 repo = Repository(db)
+                repo!!.initializeFinance()
                 try {
-                    draft.value = Drafts.read(ctx)
+                    var restored = DraftVault.active(ctx)
+                    if (restored?.route?.startsWith("legacy:") == true)
+                        restored =
+                            DraftVault.rebindLegacy(
+                                ctx,
+                                restored.item,
+                                repo!!.contains(restored.item.id),
+                            )
+                    savedInputs.value = DraftVault.list(ctx)
+                    val active = restored
+                    if (active != null)
+                        withContext(Dispatchers.Main) {
+                            draftClock.accumulateAndGet(active.generation, ::maxOf)
+                            draftRoute = active.route
+                            editing.value = active.item
+                            draft.value = active.item
+                        }
                 } catch (e: Exception) {
                     message.value = "一時保存を読み込めませんでした。元データは変更していません"
                 }
@@ -179,18 +265,20 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                         .collect { rows ->
                             _items.value = rows
                             withContext(Dispatchers.IO) {
-                                rows.forEach { item ->
-                                    Catalog.reminderKeys.forEach { key ->
-                                        if (item[key].isNotEmpty())
-                                            runCatching {
-                                                Reminders.set(
-                                                    ctx,
-                                                    "${item.id}.$key",
-                                                    java.time.LocalDateTime.parse(item[key]),
-                                                )
-                                            }
+                                rows
+                                    .filter { it["archived"] != "true" }
+                                    .forEach { item ->
+                                        Catalog.reminderKeys.forEach { key ->
+                                            if (item[key].isNotEmpty())
+                                                runCatching {
+                                                    Reminders.set(
+                                                        ctx,
+                                                        "${item.id}.$key",
+                                                        java.time.LocalDateTime.parse(item[key]),
+                                                    )
+                                                }
+                                        }
                                     }
-                                }
                             }
                         }
                 }
@@ -230,15 +318,26 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun save(item: Item) = run { save(item) }
+    fun save(item: Item) =
+        viewModelScope.launch {
+            try {
+                saveChecked(item)
+            } catch (e: Exception) {
+                message.value = e.message ?: "保存できませんでした"
+            }
+        }
 
     suspend fun saveChecked(item: Item) =
-        withContext(Dispatchers.IO) { requireNotNull(repo).save(item) }
+        withContext(Dispatchers.IO) {
+            val clean = item.copy(data = item.data.filterKeys { !it.startsWith("_") })
+            if (clean.kind == "card_debit") requireNotNull(repo).confirmDebit(clean)
+            else requireNotNull(repo).save(clean)
+        }
 
     fun delete(item: Item) = run {
         delete(item)
         Catalog.reminderKeys.forEach { Reminders.cancel(ctx, "${item.id}.$it") }
-        offerUndo("記録を削除しました") { requireNotNull(repo).undoDelete(item) }
+        offerUndo("「${item.title.take(24)}」を削除しました") { requireNotNull(repo).undoDelete(item) }
     }
 
     fun recognize(item: Item, uri: Uri) {
@@ -253,9 +352,26 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                             (editing.value?.takeIf { it.id == item.id } ?: item).let {
                                 it.copy(data = it.data + ("image" to id))
                             }
-                        editing.value = updated
-                        draft.value = updated
-                        Drafts.save(ctx, updated)
+                        withContext(Dispatchers.Main) {
+                            if (editing.value?.let(DraftBook::key) == DraftBook.key(updated)) {
+                                saveDraft(updated)
+                            } else {
+                                val generation = draftClock.incrementAndGet()
+                                draftWrites.send {
+                                    DraftVault.find(ctx, item)?.let { stored ->
+                                        DraftVault.save(
+                                            ctx,
+                                            stored.item.copy(
+                                                data = stored.item.data + ("image" to id)
+                                            ),
+                                            stored.route,
+                                            generation,
+                                            activate = false,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         val bytes = Images.read(ctx, id)
                         val bitmap =
                             try {
@@ -303,7 +419,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             val images = JSONObject()
             try {
                 val rows = JSONObject(plainData.toString(Charsets.UTF_8)).getJSONArray("records")
-                require(rows.length() <= 10000)
+                require(rows.length() <= 20000)
                 val ids =
                     (0 until rows.length())
                         .map { rows.getJSONObject(it).getJSONObject("data").optString("image") }

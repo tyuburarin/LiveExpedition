@@ -124,6 +124,7 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onPause() {
+        model.persistActiveDraft()
         unlocked = false
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         super.onPause()

@@ -24,16 +24,12 @@ object Tiles {
             "hotel" to "宿泊",
             "venue" to "目的地・会場",
             "deadlines" to "申込・支払期限",
+            "accounts" to "口座の残高",
+            "credit" to "未引落しのカード利用",
+            "transactions" to "収支一覧",
         )
     val defaults =
-        listOf(
-            Tile("money", 2, 1),
-            Tile("live"),
-            Tile("plan"),
-            Tile("deadlines"),
-            Tile("subscription"),
-            Tile("recent", 2, 1),
-        )
+        listOf(Tile("money", 2, 1), Tile("live"), Tile("subscription"), Tile("plan", 2, 1))
 
     fun validate(tiles: List<Tile>) {
         require(tiles.size <= names.size && tiles.map { it.key }.distinct().size == tiles.size)

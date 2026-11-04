@@ -52,6 +52,31 @@ fun RecordDetailBody(
     onImage: () -> Unit,
     onDuplicate: () -> Unit,
 ) {
+    if (item.kind == "subscription") {
+        SubscriptionDetail(item, onEdit)
+        return
+    }
+    if (
+        item.kind in listOf("balance_setting", "card_debit") ||
+            (item.kind == "transaction" && item["type"] == "振替")
+    ) {
+        Text(item.title, style = MaterialTheme.typography.headlineSmall)
+        MoneyAmount("amount:${item.id}", item.amount, "金額", 30)
+        InfoCard(
+            "記録",
+            listOf(
+                "日付" to UiPolicy.date(item["recordedAt"].ifEmpty { item["date"] }),
+                "口座" to
+                    Ledger.accounts(all)
+                        .firstOrNull { it.id == Ledger.accountId(item) }
+                        ?.title
+                        .orEmpty(),
+            ),
+        )
+        if (item["memo"].isNotEmpty()) Text(item["memo"])
+        if (item.kind == "card_debit") Caption("カード利用時に支出計上済みのため、引落しは支出集計に重ねません。")
+        return
+    }
     var legsOpen by remember(item.id) { mutableStateOf(false) }
     if (item["image"].isNotEmpty()) SecureThumbnail(item, Modifier.fillMaxWidth().height(170.dp))
     Text(
@@ -155,7 +180,12 @@ fun RecordDetailBody(
                                     if (item.kind == "artist") item.title else item["artist"],
                                 )
                                 if (item.kind == "tour") put("tour", item.title)
-                                if (all.any { it.id == item.id })
+                                if (
+                                    all.any { it.id == item.id } &&
+                                        item.kind !in
+                                            listOf("account", "balance_setting", "card_debit") &&
+                                        !(item.kind == "transaction" && item["type"] == "振替")
+                                )
                                     put(
                                         if (item.kind == "artist") "artistRef" else "tourRef",
                                         item.id,
@@ -274,7 +304,15 @@ fun RecordDetailBody(
         }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { onEdit(item) }) {
-            Text(if (all.any { it.id == item.id }) "編集" else "登録・編集")
+            Text(
+                if (
+                    all.any { it.id == item.id } &&
+                        item.kind !in listOf("account", "balance_setting", "card_debit") &&
+                        !(item.kind == "transaction" && item["type"] == "振替")
+                )
+                    "編集"
+                else "登録・編集"
+            )
         }
         if (item.kind in listOf("live", "candidate"))
             OutlinedButton(onClick = onDuplicate) { Text("複製して登録") }
@@ -454,7 +492,11 @@ internal fun DetailDialog(
                                 }
                             }
                     }
-                    if (all.any { it.id == item.id })
+                    if (
+                        all.any { it.id == item.id } &&
+                            item.kind !in listOf("account", "balance_setting", "card_debit") &&
+                            !(item.kind == "transaction" && item["type"] == "振替")
+                    )
                         TextButton(onClick = { deleting = true }) {
                             Text("この記録を削除", color = MaterialTheme.colorScheme.error)
                         }

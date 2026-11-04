@@ -42,14 +42,14 @@ object Connections {
                                 )
                             )
                     }
-                    if (item.kind == "subscription" && item["status"] == "契約中")
+                    if (SubscriptionBilling.active(item) && SubscriptionBilling.next(item) != null)
                         add(
                             Deadline(
                                 "${item.id}:bill",
                                 item,
                                 "更新・請求日",
-                                LocalDate.parse(item["date"]).atStartOfDay(),
-                                item["paid"].isNotEmpty(),
+                                SubscriptionBilling.next(item)!!.atStartOfDay(),
+                                false,
                             )
                         )
                 }

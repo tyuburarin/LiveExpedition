@@ -33,7 +33,9 @@ private fun SettingSwitch(
 }
 
 @Composable
-fun SettingsScreen(model: AppModel) {
+fun SettingsScreen(model: AppModel, onDetail: (Item) -> Unit = {}) {
+    val all by model.items.collectAsState()
+    val savedInputs by model.savedInputs.collectAsState()
     var section by rememberSaveable { mutableStateOf("") }
     var confirmOff by remember { mutableStateOf(false) }
     val theme by model.theme.collectAsState(initial = "charcoal")
@@ -50,6 +52,14 @@ fun SettingsScreen(model: AppModel) {
                 Icon(Icons.Outlined.ChevronLeft, null)
                 Text("設定一覧へ")
             }
+        if (section == "accounts") {
+            AccountManager(all, model::beginEdit)
+            return@Column
+        }
+        if (section == "cards") {
+            CreditCardManager(all, model::beginEdit, onDetail)
+            return@Column
+        }
         if (section == "data") {
             BackupSettings(model)
             return@Column
@@ -63,6 +73,9 @@ fun SettingsScreen(model: AppModel) {
                         "theme" to "表示・テーマ",
                         "navigation" to "ナビゲーション",
                         "home" to "ホーム",
+                        "accounts" to "口座管理（最大2つ）",
+                        "cards" to "クレジットカード",
+                        "inputs" to "入力の自動保存",
                         "privacy" to "認証・プライバシー",
                         "data" to "データ管理",
                     )
@@ -78,6 +91,24 @@ fun SettingsScreen(model: AppModel) {
                         }
                     }
             when (section) {
+                "inputs" -> {
+                    SectionTitle("入力の自動保存")
+                    Caption("入力画面を開くと前回の内容に戻ります。不要な入力はここから破棄できます。")
+                    if (savedInputs.isEmpty()) Text("保存された入力はありません")
+                    savedInputs.forEach { entry ->
+                        Panel(Modifier.fillMaxWidth(), onClick = { model.beginEdit(entry.item) }) {
+                            Text(entry.item.title.ifBlank { Catalog.kind(entry.item.kind).label })
+                            Row {
+                                TextButton(onClick = { model.beginEdit(entry.item) }) {
+                                    Text("入力を再開")
+                                }
+                                TextButton(onClick = { model.discardSavedInput(entry.item) }) {
+                                    Text("破棄")
+                                }
+                            }
+                        }
+                    }
+                }
                 "theme" -> {
                     SectionTitle("表示・テーマ")
                     val options =

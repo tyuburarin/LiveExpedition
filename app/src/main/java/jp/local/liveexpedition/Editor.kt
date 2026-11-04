@@ -127,6 +127,8 @@ internal fun EditDialog(
     onConsumeOcr: () -> Unit = {},
     onSaveExtra: (suspend (Item) -> Unit)? = null,
     onDeleteExtra: ((Item) -> Unit)? = null,
+    onEditRelated: ((Item) -> Unit)? = null,
+    onDiscard: (() -> Unit)? = null,
     onSave: suspend (Item) -> Unit,
 ) {
     val values =
@@ -186,6 +188,9 @@ internal fun EditDialog(
                             }
                         },
                         actions = {
+                            onDiscard?.let { discard ->
+                                TextButton(onClick = discard, enabled = !busy) { Text("破棄") }
+                            }
                             TextButton(
                                 enabled = !busy,
                                 onClick = {
@@ -323,6 +328,39 @@ internal fun EditDialog(
                             }
                     schema.forEach { f ->
                         when {
+                            f.key == "accountId" -> {
+                                val accounts = Ledger.accounts(all)
+                                if (accounts.size > 1 && values["method"] != "クレジットカード")
+                                    NamedReference(
+                                        "口座",
+                                        values[f.key].orEmpty().ifEmpty { accounts.first().id },
+                                        accounts,
+                                        { values[f.key] = it },
+                                    )
+                            }
+                            f.key == "cardId" -> {
+                                if (values["method"] == "クレジットカード") {
+                                    NamedReference(
+                                        "クレジットカード",
+                                        values[f.key].orEmpty(),
+                                        all.filter { it.kind == "credit_card" },
+                                        { id ->
+                                            values[f.key] = id
+                                            all.firstOrNull { it.id == id }
+                                                ?.let { values["accountId"] = it["accountId"] }
+                                        },
+                                    )
+                                }
+                            }
+                            f.key == "dueDate" -> {
+                                if (values["method"] == "クレジットカード")
+                                    FieldInput(
+                                        "支払予定日の個別変更",
+                                        values[f.key].orEmpty(),
+                                        { values[f.key] = it },
+                                        dateType = "date",
+                                    )
+                            }
                             f.key == "parent" -> {
                                 val parent = all.firstOrNull { it.id == values["parent"] }
                                 var picker by remember { mutableStateOf(false) }
@@ -648,7 +686,9 @@ internal fun EditDialog(
                 if (onSaveExtra != null) {
                     TextButton(
                         onClick = {
-                            categoryEdit = Item(kind = "category", data = emptyMap())
+                            if (onEditRelated != null)
+                                onEditRelated(Item(kind = "category", data = emptyMap()))
+                            else categoryEdit = Item(kind = "category", data = emptyMap())
                             categorySheet = false
                         }
                     ) {
@@ -660,7 +700,8 @@ internal fun EditDialog(
                                 Text(c.title, Modifier.weight(1f))
                                 TextButton(
                                     onClick = {
-                                        categoryEdit = c
+                                        if (onEditRelated != null) onEditRelated(c)
+                                        else categoryEdit = c
                                         categorySheet = false
                                     }
                                 ) {

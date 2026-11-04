@@ -76,11 +76,81 @@ abstract class VaultDatabase : RoomDatabase() {
 }
 
 class Repository(private val db: VaultDatabase) {
+    suspend fun contains(id: String) = db.records().find(id) != null
+
+    suspend fun initializeFinance() =
+        db.withTransaction {
+            val before = db.records().all().map(Record::item)
+            val migrated = Ledger.upgrade(before)
+            Ledger.validateReferences(migrated)
+            migrated
+                .filter { it != before.firstOrNull { old -> old.id == it.id } }
+                .forEach {
+                    Rules.validate(it)
+                    db.records().put(Record.of(it))
+                }
+        }
+
+    suspend fun confirmDebit(input: Item) =
+        db.withTransaction {
+            require(db.records().find(input.id) == null) { "引落しは登録済みです" }
+            val all = db.records().all().map(Record::item)
+            val card =
+                requireNotNull(
+                    all.firstOrNull { it.kind == "credit_card" && it.id == input["cardId"] }
+                )
+            require(input["accountId"] == card["accountId"]) { "カードの引落し口座が変わりました。開き直してください" }
+            val ids = input["usageIds"].split(',').filter(String::isNotBlank)
+            require(ids.isNotEmpty() && ids.distinct().size == ids.size) { "対象のカード利用を選択してください" }
+            val pending = Ledger.outstanding(all, card.id)
+            val uses =
+                ids.map { id ->
+                    requireNotNull(pending.firstOrNull { it.id == id }) { "引落し済みの利用が含まれています" }
+                }
+            require(java.time.LocalDate.parse(input["date"]) <= java.time.LocalDate.now()) {
+                "実際の引落し日を指定してください"
+            }
+            val item =
+                Ledger.prepare(
+                    input.copy(
+                        data = input.data + ("amount" to uses.sumOf { it.amount }.toString())
+                    ),
+                    null,
+                    all,
+                )
+            Rules.validate(item)
+            Ledger.validateReferences(all + item)
+            db.records().put(Record.of(item))
+        }
+
     val items = db.records().observe().map { rows -> rows.map { it.item().also(Rules::validate) } }
 
-    suspend fun save(item: Item) =
+    suspend fun save(input: Item) =
         db.withTransaction {
+            require(input.kind != "card_debit") { "引落しは専用の確定操作を使ってください" }
+            val allBefore = db.records().all().map(Record::item)
+            val previous = allBefore.firstOrNull { it.id == input.id }
+            require(previous == null || input["revision"] == previous["revision"]) {
+                "記録が更新済みです。下書きは残っています。開き直してください"
+            }
+            require(input.kind != "balance_setting" || previous == null) {
+                "残高設定の履歴は変更せず、新しく残高を設定してください"
+            }
+            var item = Ledger.prepare(input, previous, allBefore)
+            if (item.kind == "subscription") item = SubscriptionBilling.normalize(item)
+            item =
+                item.copy(
+                    data =
+                        item.data +
+                            ("revision" to
+                                ((previous?.get("revision")?.toLongOrNull() ?: 0) + 1).toString())
+                )
             Rules.validate(item)
+            if (item.kind == "account")
+                require(allBefore.count { it.kind == "account" && it.id != item.id } < 2) {
+                    "口座は最大2つです"
+                }
+            Ledger.validateReferences(allBefore.filter { it.id != item.id } + item)
             if (item["artistRef"].isNotEmpty())
                 require(db.records().find(item["artistRef"])?.kind == "artist") {
                     "対象アーティストを確認してください"
@@ -113,14 +183,14 @@ class Repository(private val db: VaultDatabase) {
                     "連携した取引は元データから管理してください"
                 }
             val old = db.records().find(item.id)?.item()
-            require(old != null || db.records().all().size < 10000) { "登録件数の上限は10000件です" }
+            require(old != null || db.records().all().size < 20000) { "登録件数の上限は20000件です" }
             require(
                 old == null ||
                     listOf("paid", "payments", "billingDates").all { item[it] == old[it] }
             ) {
                 "支払記録が更新されています。画面を開き直してください"
             }
-            if (old != null && old["paid"].isNotEmpty())
+            if (old != null && old["paid"].isNotEmpty() && item.kind != "subscription")
                 require(item.amount == old.amount && item["fee"] == old["fee"]) {
                     "支払済み金額の変更はできません"
                 }
@@ -145,6 +215,35 @@ class Repository(private val db: VaultDatabase) {
     suspend fun delete(item: Item) =
         db.withTransaction {
             val current = requireNotNull(db.records().find(item.id)).item()
+            if (current.kind == "subscription") {
+                db.records()
+                    .put(
+                        Record.of(
+                            current.copy(
+                                data =
+                                    current.data +
+                                        ("archived" to "true") +
+                                        ("revision" to
+                                            ((current["revision"].toLongOrNull() ?: 0) + 1)
+                                                .toString())
+                            )
+                        )
+                    )
+                return@withTransaction
+            }
+            require(current.kind !in listOf("account", "balance_setting", "card_debit")) {
+                "残高・引落しの履歴は削除できません"
+            }
+            val ledgerRows = db.records().all().map(Record::item)
+            require(
+                ledgerRows.none {
+                    it["cardId"] == item.id ||
+                        it["accountId"] == item.id ||
+                        item.id in it["usageIds"].split(',')
+                }
+            ) {
+                "関連する会計履歴があります"
+            }
             val all = db.records().all().map(Record::item)
             require(
                 current["paid"].isEmpty() &&
@@ -165,14 +264,19 @@ class Repository(private val db: VaultDatabase) {
         }
 
     suspend fun undoDelete(item: Item) {
-        require(db.records().find(item.id) == null) { "同じ記録が既に存在します" }
-        save(item)
+        val existing = db.records().find(item.id)?.item()
+        if (item.kind == "subscription" && existing?.get("archived") == "true") {
+            save(existing.copy(data = existing.data - "archived"))
+            return
+        }
+        require(existing == null) { "同じ記録が既に存在します" }
+        save(item.copy(data = item.data - "revision"))
     }
 
     suspend fun pay(id: String, date: LocalDate) =
         db.withTransaction {
             val source = requireNotNull(db.records().find(id)).item()
-            require(source.kind in listOf("ticket", "candidate", "subscription"))
+            require(source.kind in listOf("ticket", "candidate")) { "サブスクは請求予測のみです" }
             require(source["paid"].isEmpty()) { "支払済みです" }
             require(source["amount"].isNotEmpty()) { "金額を入力してください" }
             require(date.year in 2000..2100 && date <= LocalDate.now()) { "実際の支払日を指定してください" }
@@ -196,10 +300,13 @@ class Repository(private val db: VaultDatabase) {
                                 if (source.kind == "ticket") "ライブ"
                                 else if (source.kind == "subscription") "サブスク" else "遠征",
                             "method" to source["method"],
+                            "accountId" to Ledger.accountId(source),
+                            "cardId" to source["cardId"],
+                            "dueDate" to source["dueDate"],
                         ),
                 )
             Rules.validate(txn)
-            db.records().put(Record.of(txn))
+            save(txn)
             val updated =
                 source.copy(
                     data =
@@ -269,7 +376,7 @@ class Repository(private val db: VaultDatabase) {
         val j = JSONObject(JsonSafety.text(bytes))
         require(j.getInt("version") == 1)
         val array = j.getJSONArray("records")
-        require(array.length() <= 10000)
+        require(array.length() <= 20000)
         val items =
             (0 until array.length()).map { n ->
                 val r = array.getJSONObject(n)
@@ -322,9 +429,12 @@ class Repository(private val db: VaultDatabase) {
         }
         val paymentIds = items.flatMap { it["payments"].split(',').filter(String::isNotBlank) }
         require(paymentIds.distinct().size == paymentIds.size)
+        val upgraded = Ledger.upgrade(items)
+        Ledger.validateReferences(upgraded)
+        upgraded.forEach(Rules::validate)
         db.withTransaction {
             db.records().clear()
-            items.forEach { db.records().put(Record.of(it)) }
+            upgraded.forEach { db.records().put(Record.of(it)) }
         }
     }
 }
