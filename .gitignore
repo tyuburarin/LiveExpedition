@@ -1,0 +1,62 @@
+# Gradle / Android generated files
+.gradle/
+.kotlin/
+**/build/
+**/.cxx/
+**/.externalNativeBuild/
+local.properties
+
+# IDE / operating system
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Application packages, compiled output and diagnostics
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.hprof
+*.log
+captures/
+reports/
+outputs/
+work/
+
+# Signing material, credentials and machine-local configuration
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+key.properties
+keystore.properties
+signing.properties
+signing-*.properties
+.env
+.env.*
+!.env.example
+credentials.json
+service-account*.json
+google-services.json
+agconnect-services.json
+**/secrets/
+**/secrets.xml
+**/api_keys.xml
+
+# User data, database files, backups and archives
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.backup
+*.bak
+*.zip
+*.7z
+*.tar
+*.gz
+
+# Keep the standard Gradle wrapper JAR and public OCR model assets.
